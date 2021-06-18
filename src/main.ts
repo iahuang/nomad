@@ -5,7 +5,7 @@ import { Util } from "./nomad/util";
 console.log("starting...");
 
 let nomad = new Nomad({
-    maxPendingRequests: 200,
+    maxPendingRequests: 1,
 });
 
 nomad.onVisitNewDomain.addListener((domain) => {
@@ -34,5 +34,5 @@ nomad.onProcessNode.addListener((node) => {
     }
 });
 
-nomad.addNodes("https://github.com/");
+nomad.addNodes("https://www.reddit.com/");
 nomad.run();

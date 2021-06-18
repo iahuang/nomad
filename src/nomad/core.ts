@@ -8,7 +8,9 @@ function sleep(ms: number) {
 }
 
 export interface NomadConfig {
-    maxPendingRequests: number; // maximum number of pending http requests that Nomad will allow at one time
+    // maximum number of pending http requests that Nomad will allow at one time
+    // if less than 2, Nomad will wait for each request to finish before moving to the next
+    maxPendingRequests: number;
 }
 
 export class Nomad {
@@ -76,6 +78,20 @@ export class Nomad {
     // }
 
     async run() {
+        if (this.cfg.maxPendingRequests > 1) {
+            this._concurrentRun();
+        } else {
+            this._seriesRun();
+        }
+    }
+
+    async _seriesRun() {
+        while (this.nodes.length > 0) {
+            await this.visitNode(this.nodes.dequeue());
+        }
+    }
+
+    async _concurrentRun() {
         while (this.nodes.length > 0 || this.processingInProgress > 0) {
             // if there are too many pending requests, sit around for a bit to let
             // all the fetch calls catch up
@@ -85,11 +101,8 @@ export class Nomad {
             }
             if (this.nodes.length > 0) {
                 let currNode = this.nodes.dequeue();
-                try {
-                    this.visitNode(currNode);
-                } catch {
-                    console.log(`An unexpected error occurred while processing: "${currNode}"`);
-                }
+
+                this.visitNode(currNode);
 
                 this.onProcessNode._notifyListeners(currNode);
             } else {
@@ -143,7 +156,7 @@ export class Nomad {
             if (!resp.ok) {
                 this.numNonOkRequests += 1;
             }
-        } catch(err) {
+        } catch (err) {
             this.numFailedRequests += 1;
             this.processingInProgress -= 1;
             console.log(err);
@@ -158,23 +171,26 @@ export class Nomad {
         let dom = new JSDOM(htmlContent);
         let document = dom.window.document;
 
+        let processRawURLS = (urls: string[]) => {
+            let processed: string[] = [];
+            for (let url of urls) {
+                try {
+                    // make sure links are non-relative
+                    let absoluteURL = new URL(url, parentURL).href;
+                    processed.push(absoluteURL);
+                } catch {}
+            }
+
+            return processed;
+        };
+
         // add <a> href links
-        let hrefs = Array.from(document.querySelectorAll("a"))
-            .map((n) => n.href)
-            .map((url) => {
-                // make sure links are non-relative
-                return new URL(url, parentURL).href;
-            });
+        let hrefs = Array.from(document.querySelectorAll("a")).map((n) => n.href);
 
         // add JS source files
-        let srcs = Array.from(document.querySelectorAll("script"))
-            .map((n) => n.src)
-            .map((url) => {
-                // make sure links are non-relative
-                return new URL(url, parentURL).href;
-            });
+        let srcs = Array.from(document.querySelectorAll("script")).map((n) => n.src);
 
-        this.addNodes(...hrefs);
-        this.addNodes(...srcs);
+        this.addNodes(...processRawURLS(hrefs));
+        this.addNodes(...processRawURLS(srcs));
     }
 }
