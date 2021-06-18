@@ -1,7 +1,7 @@
 import { JSDOM } from "jsdom";
 import { EventManager } from "./event_manager";
 import { Fetcher } from "./fetcher";
-import { LargeHashSet } from "./session_storage";
+import { LargeHashSet, LargeQueue } from "./session_storage";
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,7 +17,7 @@ export class Nomad {
     visitedPages: LargeHashSet;
     visitedDomains: LargeHashSet;
 
-    nodes: string[];
+    nodes: LargeQueue;
 
     processingInProgress: number;
 
@@ -27,7 +27,11 @@ export class Nomad {
 
     cfg: NomadConfig;
 
-    resumeCallback: Function | null;
+    // purely for statistics purposes
+    numRequests: number;
+    numNonOkRequests: number;
+    numFailedRequests: number;
+    timeSpentFetching: number; // in ms
 
     constructor(cfg: NomadConfig) {
         this.fetcher = new Fetcher();
@@ -35,16 +39,21 @@ export class Nomad {
         this.visitedPages = new LargeHashSet("visited_pages");
         this.visitedDomains = new LargeHashSet("visited_domains");
 
-        this.nodes = [];
+        this.nodes = new LargeQueue("node_queue");
         this.processingInProgress = 0;
 
-        this.resumeCallback = null;
-
         this.cfg = cfg;
+
+        this.numRequests = 0;
+        this.numNonOkRequests = 0;
+        this.numFailedRequests = 0;
+        this.timeSpentFetching = 0;
     }
 
     addNodes(...nodes: string[]) {
-        this.nodes.push(...nodes);
+        for (let node of nodes) {
+            this.nodes.enqueue(node);
+        }
     }
 
     getStatistics() {
@@ -53,15 +62,18 @@ export class Nomad {
             visitedDomains: this.visitedDomains.length,
             nodes: this.nodes.length,
             inProgress: this.processingInProgress,
-            storageSize: this.visitedDomains.dataUsage + this.visitedPages.dataUsage,
+            storageSize: this.visitedDomains.dataUsage + this.visitedPages.dataUsage + this.nodes.dataUsage,
+            fetchFailRate: this.numFailedRequests / this.numRequests,
+            averageFetchTime: this.timeSpentFetching / this.numRequests,
+            totalRequests: this.numRequests,
         };
     }
 
-    async waitForAllInProgress() {
-        await new Promise((res, rej) => {
-            this.resumeCallback = res;
-        });
-    }
+    // async waitForAllInProgress() {
+    //     await new Promise((res, rej) => {
+    //         this.resumeCallback = res;
+    //     });
+    // }
 
     async run() {
         while (this.nodes.length > 0 || this.processingInProgress > 0) {
@@ -72,9 +84,13 @@ export class Nomad {
                 continue;
             }
             if (this.nodes.length > 0) {
-                let currNode = this.nodes.pop()!;
+                let currNode = this.nodes.dequeue();
+                try {
+                    this.visitNode(currNode);
+                } catch {
+                    console.log(`An unexpected error occurred while processing: "${currNode}"`);
+                }
 
-                this.visitNode(currNode);
                 this.onProcessNode._notifyListeners(currNode);
             } else {
                 console.log("Waiting for something to do...");
@@ -107,19 +123,31 @@ export class Nomad {
 
         // query node
         this.processingInProgress += 1;
+
         try {
+            this.numRequests += 1;
+
+            let startTime = Date.now();
             let resp = await this.fetcher.httpGet(node);
+            let deltaTime = Date.now() - startTime;
+
+            this.timeSpentFetching += deltaTime;
+
             this.processingInProgress -= 1;
 
             if (resp.contentType.mimeType === "text/html") {
                 this.onVisitPage._notifyListeners(urlInfo.baseURL, resp.body);
                 this.processHTMLFile(resp.body, urlInfo.baseURL);
             }
-        } catch {
-            this.processingInProgress -= 1;
-        }
 
-        
+            if (!resp.ok) {
+                this.numNonOkRequests += 1;
+            }
+        } catch(err) {
+            this.numFailedRequests += 1;
+            this.processingInProgress -= 1;
+            console.log(err);
+        }
 
         // if (this.resumeCallback) {
         //     if (this.processingInProgress === 0) this.resumeCallback();

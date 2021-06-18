@@ -20,16 +20,19 @@ nomad.onProcessNode.addListener((node) => {
         console.log(
             [
                 "====== Statistics ======",
-                " visited pages:   " + chalk.magenta(stats.visitedPages),
-                " visited domains: " + chalk.magenta(stats.visitedDomains),
-                " current nodes:   " + chalk.green(stats.nodes),
-                " pending reqs:    " + chalk.yellow(stats.inProgress),
-                " data usage:      " + chalk.blue(Util.sizeDescriptor(stats.storageSize)),
+                " visited pages:      " + chalk.magenta(stats.visitedPages),
+                " visited domains:    " + chalk.magenta(stats.visitedDomains),
+                " current nodes:      " + chalk.green(stats.nodes),
+                " pending reqs:       " + chalk.yellow(stats.inProgress),
+                " data usage:         " + chalk.blue(Util.sizeDescriptor(stats.storageSize)),
+                " fetch success rate: " + chalk.green(((1 - stats.fetchFailRate) * 100).toFixed(1) + "%"),
+                " avg. request time:  " + chalk.blue(Math.floor(stats.averageFetchTime) + "ms"),
+                " total http reqs:    " + chalk.magenta(stats.totalRequests),
                 "========================",
             ].join("\n")
         );
     }
 });
 
-nomad.addNodes("https://docs.microsoft.com/en-us/windows/wsl/compare-versions");
+nomad.addNodes("https://github.com/");
 nomad.run();

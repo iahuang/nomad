@@ -37,8 +37,7 @@ export class Fetcher {
             method: "GET",
             headers: {
                 "User-Agent": this.userAgent,
-            },
-            timeout: 10_000,
+            }
         });
 
         let text = await response.text();

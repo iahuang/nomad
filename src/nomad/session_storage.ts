@@ -1,7 +1,10 @@
 /*
-    A special object that works via the filesystem to store potentially
-    large amounts of data in chunks. Non-persistent; i.e. cannot be used
-    between sessions
+    A collection of special objects that work via the filesystem to store
+    potentially large amounts of data in chunks. Non-persistent; i.e. cannot be used
+    between sessions.
+
+    Currently included are two implementations of the HashSet and Queue data structures,
+    written specifically to make use of the filesystem rather than storing data in memory.
 */
 
 import fs from "fs";
@@ -9,8 +12,37 @@ import path from "path";
 import { fnv_1a } from "./hash";
 import { Util } from "./util";
 
+function _formatDataEntry(data: string) {
+    return Util.replaceAll(data, "\n", "\\n");
+}
+
+function _unFormatDataEntry(data: string) {
+    return Util.replaceAll(data, "\\n", "\n");
+}
+
 const STORAGE_DIR = "_storage";
 const N_STORAGE_BUCKETS = 512;
+
+export class LargeStorage {
+    static hasCleanedUp = false;
+
+    static init() {
+        // init storage directory, if necessary
+        if (!fs.existsSync(STORAGE_DIR)) {
+            fs.mkdirSync(STORAGE_DIR);
+        } else if (!LargeStorage.hasCleanedUp) {
+            // if the storage directory does exist, remove residual files
+            // from last run
+            LargeStorage.cleanUp();
+            fs.mkdirSync(STORAGE_DIR);
+            LargeStorage.hasCleanedUp = true;
+        }
+    }
+
+    static cleanUp() {
+        fs.rmSync(STORAGE_DIR, { recursive: true });
+    }
+}
 
 class Bucket {
     id: number;
@@ -22,15 +54,11 @@ class Bucket {
 
     get filePath() {
         // Returns the underlying file path to the chunk data
-        return path.join(STORAGE_DIR, this.namespace + "_chunk" + this.id);
+        return path.join(STORAGE_DIR, this.namespace + "_bk_" + this.id.toString(16));
     }
 
     makeFile() {
         fs.writeFileSync(this.filePath, "");
-    }
-
-    _formatDataEntry(data: string) {
-        return Util.replaceAll(data, "\n", "\\n");
     }
 
     _load() {
@@ -38,11 +66,11 @@ class Bucket {
     }
 
     _rawAdd(data: string) {
-        fs.appendFileSync(this.filePath, this._formatDataEntry(data) + "\n");
+        fs.appendFileSync(this.filePath, _formatDataEntry(data) + "\n");
     }
 
     _has(data: string) {
-        return this._load().includes(this._formatDataEntry(data));
+        return this._load().includes(_formatDataEntry(data));
     }
 }
 
@@ -52,24 +80,13 @@ export class LargeHashSet {
     name: string;
     dataUsage: number; // in bytes
 
-    static hasCleanedUp = false;
-
     constructor(name: string) {
-        // init storage directory, if necessary
-        if (!fs.existsSync(STORAGE_DIR)) {
-            fs.mkdirSync(STORAGE_DIR);
-        } else if (!LargeHashSet.hasCleanedUp) {
-            // if the storage directory does exist, remove residual files
-            // from last run
-            LargeHashSet.cleanUp();
-            fs.mkdirSync(STORAGE_DIR);
-            LargeHashSet.hasCleanedUp = true;
-        }
-
         this.length = 0;
         this.dataUsage = 0;
         this.buckets = [];
         this.name = name;
+
+        LargeStorage.init();
 
         let progressBar = new Util.ProgressBar("building storage: " + this.name);
         progressBar.display();
@@ -96,16 +113,12 @@ export class LargeHashSet {
         if (this.has(data)) return false;
         this._getBucketForData(data)._rawAdd(data);
         this.length++;
-        this.dataUsage += (new TextEncoder().encode(data)).length;
+        this.dataUsage += new TextEncoder().encode(data).length;
         return true;
     }
 
     has(data: string) {
         return this._getBucketForData(data)._has(data);
-    }
-
-    static cleanUp() {
-        fs.rmSync(STORAGE_DIR, { recursive: true });
     }
 }
 
@@ -127,5 +140,119 @@ function test() {
 
             lastTime = thisTime;
         }
+    }
+}
+
+const QUEUE_CHUNK_SIZE = 1024;
+
+class QueueChunk {
+    id: number;
+    namespace: string;
+    length: number;
+
+    constructor(id: number, namespace: string) {
+        this.id = id;
+        this.namespace = namespace;
+        this.length = 0;
+
+        this._makeFile();
+    }
+
+    get filePath() {
+        // Returns the underlying file path to the chunk data
+        return path.join(STORAGE_DIR, this.namespace + "_chunk_" + this.id.toString(16));
+    }
+
+    _makeFile() {
+        fs.writeFileSync(this.filePath, "");
+    }
+
+    _deleteFile() {
+        fs.rmSync(this.filePath)
+    }
+
+    add(data: string) {
+        fs.appendFileSync(this.filePath, _formatDataEntry(data) + "\n");
+        this.length += 1;
+    }
+
+    dequeue() {
+        let lines = fs.readFileSync(this.filePath, "utf-8").split("\n");
+
+        let dequeued = lines[0];
+        lines = lines.slice(1);
+
+        fs.writeFileSync(this.filePath, lines.join("\n"));
+        this.length -= 1;
+        return _unFormatDataEntry(dequeued);
+    }
+}
+
+export class LargeQueue {
+    name: string;
+    chunks: QueueChunk[];
+    nextID: number;
+
+    length: number;
+    dataUsage: number;
+
+    constructor(name: string) {
+        this.name = name;
+        this.nextID = 0;
+        this.length = 0;
+        this.dataUsage = 0;
+
+        LargeStorage.init();
+
+        this.chunks = [];
+        this._addChunk();
+    }
+
+    enqueue(data: string) {
+        let chunk = this._lastChunk();
+        if (chunk.length === QUEUE_CHUNK_SIZE) {
+            chunk = this._addChunk();
+        }
+
+        chunk.add(data);
+
+        this.length += 1;
+        this.dataUsage += new TextEncoder().encode(data).length;
+    }
+
+    dequeue() {
+        let chunk = this._firstChunk();
+        let dequeued = chunk.dequeue();
+
+        if (chunk.length === 0) {
+            // remove chunk
+            this.chunks = this.chunks.slice(1);
+            chunk._deleteFile();
+        }
+
+        if (this.chunks.length === 0) {
+            this._addChunk();
+        }
+
+
+        this.length -= 1;
+        this.dataUsage -= new TextEncoder().encode(dequeued).length;
+
+        return dequeued;
+    }
+
+    _firstChunk() {
+        return this.chunks[0];
+    }
+
+    _lastChunk() {
+        return this.chunks[this.chunks.length - 1];
+    }
+
+    _addChunk() {
+        let chunk = new QueueChunk(this.nextID, this.name);
+        this.chunks.push(chunk);
+        this.nextID++;
+        return chunk;
     }
 }
