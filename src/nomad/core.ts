@@ -11,6 +11,9 @@ export interface NomadConfig {
     // maximum number of pending http requests that Nomad will allow at one time
     // if less than 2, Nomad will wait for each request to finish before moving to the next
     maxPendingRequests: number;
+
+    // how long Nomad should wait for pending requests to finish (ms)
+    requestOverflowCooldown: number;
 }
 
 export class Nomad {
@@ -96,7 +99,7 @@ export class Nomad {
             // if there are too many pending requests, sit around for a bit to let
             // all the fetch calls catch up
             if (this.processingInProgress > this.cfg.maxPendingRequests) {
-                await sleep(100);
+                await sleep(this.cfg.requestOverflowCooldown);
                 continue;
             }
             if (this.nodes.length > 0) {

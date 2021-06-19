@@ -2,21 +2,23 @@ console.log("loading modules...");
 import chalk from "chalk";
 import { Nomad } from "./nomad/core";
 import { Util } from "./nomad/util";
+import fs from "fs";
 console.log("starting...");
 
 let nomad = new Nomad({
-    maxPendingRequests: 1,
+    maxPendingRequests: 100,
+    requestOverflowCooldown: 500,
 });
 
 nomad.onVisitNewDomain.addListener((domain) => {
-    console.log("Visited", domain);
+    fs.appendFileSync("domains.txt", domain + "\n");
 });
 
-let i = 0;
+let last = Date.now();
 nomad.onProcessNode.addListener((node) => {
-    i += 1;
     let stats = nomad.getStatistics();
-    if (i % 100 === 0) {
+    if (Date.now() - last > 2000) {
+        process.stdout.write("\x1Bc");
         console.log(
             [
                 "====== Statistics ======",
@@ -27,10 +29,10 @@ nomad.onProcessNode.addListener((node) => {
                 " data usage:         " + chalk.blue(Util.sizeDescriptor(stats.storageSize)),
                 " fetch success rate: " + chalk.green(((1 - stats.fetchFailRate) * 100).toFixed(1) + "%"),
                 " avg. request time:  " + chalk.blue(Math.floor(stats.averageFetchTime) + "ms"),
-                " total http reqs:    " + chalk.magenta(stats.totalRequests),
                 "========================",
             ].join("\n")
         );
+        last = Date.now();
     }
 });
 
