@@ -7,7 +7,8 @@ console.log("starting...");
 
 let nomad = new Nomad({
     maxPendingRequests: 100,
-    requestOverflowCooldown: 500,
+    requestOverflowCooldown: 200,
+    useDeepParser: true
 });
 
 nomad.onVisitNewDomain.addListener((domain) => {
@@ -17,7 +18,7 @@ nomad.onVisitNewDomain.addListener((domain) => {
 let last = Date.now();
 nomad.onProcessNode.addListener((node) => {
     let stats = nomad.getStatistics();
-    if (Date.now() - last > 2000) {
+    if (Date.now() - last > 1000) {
         process.stdout.write("\x1Bc");
         console.log(
             [
@@ -29,6 +30,8 @@ nomad.onProcessNode.addListener((node) => {
                 " data usage:         " + chalk.blue(Util.sizeDescriptor(stats.storageSize)),
                 " fetch success rate: " + chalk.green(((1 - stats.fetchFailRate) * 100).toFixed(1) + "%"),
                 " avg. request time:  " + chalk.blue(Math.floor(stats.averageFetchTime) + "ms"),
+                " pruned nodes:       " + chalk.red(stats.prunedNodes),
+                " data processed:     " + chalk.blue(Util.sizeDescriptor(stats.bytesProcessed)),
                 "========================",
             ].join("\n")
         );
@@ -36,5 +39,5 @@ nomad.onProcessNode.addListener((node) => {
     }
 });
 
-nomad.addNodes("https://www.reddit.com/");
+nomad.addNodes("https://github.com/");
 nomad.run();

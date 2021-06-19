@@ -1,7 +1,8 @@
-import { JSDOM } from "jsdom";
+import type { JSDOM } from "jsdom";
 import { EventManager } from "./event_manager";
 import { Fetcher } from "./fetcher";
 import { LargeHashSet, LargeQueue } from "./session_storage";
+import { getHref } from "./simple_parser";
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -14,6 +15,9 @@ export interface NomadConfig {
 
     // how long Nomad should wait for pending requests to finish (ms)
     requestOverflowCooldown: number;
+
+    // Whether to use a proper HTML parser (jsdom) for parsing
+    useDeepParser: boolean;
 }
 
 export class Nomad {
@@ -37,6 +41,10 @@ export class Nomad {
     numNonOkRequests: number;
     numFailedRequests: number;
     timeSpentFetching: number; // in ms
+    prunedNodes: number;
+    bytesProcessed: number;
+
+    _JSDOM: JSDOM | null;
 
     constructor(cfg: NomadConfig) {
         this.fetcher = new Fetcher();
@@ -53,10 +61,19 @@ export class Nomad {
         this.numNonOkRequests = 0;
         this.numFailedRequests = 0;
         this.timeSpentFetching = 0;
+        this.prunedNodes = 0;
+        this.bytesProcessed = 0;
+
+        if (this.cfg.useDeepParser) console.log("Loading JSDOM...");
+        this._JSDOM = cfg.useDeepParser ? (require("jsdom").JSDOM as JSDOM) : null;
     }
 
     addNodes(...nodes: string[]) {
         for (let node of nodes) {
+            if (!this.validateNode(node)) {
+                this.prunedNodes++;
+                continue;
+            }
             this.nodes.enqueue(node);
         }
     }
@@ -70,7 +87,8 @@ export class Nomad {
             storageSize: this.visitedDomains.dataUsage + this.visitedPages.dataUsage + this.nodes.dataUsage,
             fetchFailRate: this.numFailedRequests / this.numRequests,
             averageFetchTime: this.timeSpentFetching / this.numRequests,
-            totalRequests: this.numRequests,
+            prunedNodes: this.prunedNodes,
+            bytesProcessed: this.bytesProcessed,
         };
     }
 
@@ -125,12 +143,22 @@ export class Nomad {
         };
     }
 
+    validateNode(node: string) {
+        if (!(node.startsWith("http://") || node.startsWith("https://"))) return false;
+        let urlInfo = this._parseURL(node);
+        if (this.visitedPages.has(urlInfo.baseURL)) return false;
+
+        return true;
+    }
+
     async visitNode(node: string) {
-        if (node.startsWith("about:blank")) return;
+        if (!this.validateNode(node)) {
+            this.prunedNodes += 1;
+            return;
+        }
 
         let urlInfo = this._parseURL(node);
 
-        if (this.visitedPages.has(urlInfo.baseURL)) return;
         this.visitedPages.add(urlInfo.baseURL);
         let didAddNew = this.visitedDomains.add(urlInfo.hostname);
 
@@ -145,6 +173,7 @@ export class Nomad {
 
             let startTime = Date.now();
             let resp = await this.fetcher.httpGet(node);
+            this.bytesProcessed += new TextEncoder().encode(resp.body).length;
             let deltaTime = Date.now() - startTime;
 
             this.timeSpentFetching += deltaTime;
@@ -171,9 +200,6 @@ export class Nomad {
     }
 
     async processHTMLFile(htmlContent: string, parentURL: string) {
-        let dom = new JSDOM(htmlContent);
-        let document = dom.window.document;
-
         let processRawURLS = (urls: string[]) => {
             let processed: string[] = [];
             for (let url of urls) {
@@ -187,13 +213,17 @@ export class Nomad {
             return processed;
         };
 
-        // add <a> href links
-        let hrefs = Array.from(document.querySelectorAll("a")).map((n) => n.href);
-
-        // add JS source files
-        let srcs = Array.from(document.querySelectorAll("script")).map((n) => n.src);
-
-        this.addNodes(...processRawURLS(hrefs));
-        this.addNodes(...processRawURLS(srcs));
+        if (this.cfg.useDeepParser) {
+            let dom = new (this._JSDOM as any)(htmlContent);
+            let document = dom.window.document;
+            // add <a> href links
+            let hrefs = Array.from(document.querySelectorAll("a")).map((n: any) => n.href);
+            // add JS source files
+            let srcs = Array.from(document.querySelectorAll("script")).map((n: any) => n.src);
+            this.addNodes(...processRawURLS(hrefs));
+            this.addNodes(...processRawURLS(srcs));
+        } else {
+            this.addNodes(...processRawURLS(getHref(htmlContent)));
+        }
     }
 }
