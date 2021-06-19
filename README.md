@@ -1,6 +1,6 @@
 # nomad
 
-Nomad is a small project I wrote to experiment with web crawlers; i.e. programs that explore the internet by recursively following all of the links on a given page.
+Nomad is a small project I wrote to experiment with web crawlers; i.e. programs that explore the Internet by recursively following all of the links on a given page.
 
 This project was designed with an emphasis on being able to handle large amounts of data. Potentially large data structures such as the set of all pages visited are stored on the filesystem so that the web crawler is theoretically only limited by the host system's disk space, and not by memory limits.
 
