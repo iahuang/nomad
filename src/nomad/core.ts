@@ -16,8 +16,12 @@ export interface NomadConfig {
     // how long Nomad should wait for pending requests to finish (ms)
     requestOverflowCooldown: number;
 
-    // Whether to use a proper HTML parser (jsdom) for parsing
+    // Whether to use a proper HTML parser (jsdom) for web scraping
     useDeepParser: boolean;
+
+    // Restrict visiting pages to only those whose hostnames (e.g. "images.google.com")
+    // metch the specific regex. Null for no restriction
+    hostnameRegex: string | RegExp | null;
 }
 
 export class Nomad {
@@ -37,12 +41,12 @@ export class Nomad {
     cfg: NomadConfig;
 
     // purely for statistics purposes
-    numRequests: number;
-    numNonOkRequests: number;
-    numFailedRequests: number;
-    timeSpentFetching: number; // in ms
-    prunedNodes: number;
-    bytesProcessed: number;
+    stat_numRequests: number;
+    stat_numNonOkRequests: number;
+    stat_numFailedRequests: number;
+    stat_timeSpentFetching: number; // in ms
+    stat_prunedNodes: number;
+    stat_bytesProcessed: number;
 
     _JSDOM: JSDOM | null;
 
@@ -57,12 +61,12 @@ export class Nomad {
 
         this.cfg = cfg;
 
-        this.numRequests = 0;
-        this.numNonOkRequests = 0;
-        this.numFailedRequests = 0;
-        this.timeSpentFetching = 0;
-        this.prunedNodes = 0;
-        this.bytesProcessed = 0;
+        this.stat_numRequests = 0;
+        this.stat_numNonOkRequests = 0;
+        this.stat_numFailedRequests = 0;
+        this.stat_timeSpentFetching = 0;
+        this.stat_prunedNodes = 0;
+        this.stat_bytesProcessed = 0;
 
         if (this.cfg.useDeepParser) console.log("Loading JSDOM...");
         this._JSDOM = cfg.useDeepParser ? (require("jsdom").JSDOM as JSDOM) : null;
@@ -71,7 +75,7 @@ export class Nomad {
     addNodes(...nodes: string[]) {
         for (let node of nodes) {
             if (!this.validateNode(node)) {
-                this.prunedNodes++;
+                this.stat_prunedNodes++;
                 continue;
             }
             this.nodes.enqueue(node);
@@ -85,10 +89,10 @@ export class Nomad {
             nodes: this.nodes.length,
             inProgress: this.processingInProgress,
             storageSize: this.visitedDomains.dataUsage + this.visitedPages.dataUsage + this.nodes.dataUsage,
-            fetchFailRate: this.numFailedRequests / this.numRequests,
-            averageFetchTime: this.timeSpentFetching / this.numRequests,
-            prunedNodes: this.prunedNodes,
-            bytesProcessed: this.bytesProcessed,
+            fetchFailRate: this.stat_numFailedRequests / this.stat_numRequests,
+            averageFetchTime: this.stat_timeSpentFetching / this.stat_numRequests,
+            prunedNodes: this.stat_prunedNodes,
+            bytesProcessed: this.stat_bytesProcessed,
         };
     }
 
@@ -144,16 +148,25 @@ export class Nomad {
     }
 
     validateNode(node: string) {
+        // make sure that this node uses the HTTP(S) protocol
         if (!(node.startsWith("http://") || node.startsWith("https://"))) return false;
+
         let urlInfo = this._parseURL(node);
+        
+        // make sure we haven't already visited this node
         if (this.visitedPages.has(urlInfo.baseURL)) return false;
+
+        // make sure node passes hostname validation
+        if (this.cfg.hostnameRegex) {
+            if (!urlInfo.hostname.match(this.cfg.hostnameRegex)) return false;
+        }
 
         return true;
     }
 
     async visitNode(node: string) {
         if (!this.validateNode(node)) {
-            this.prunedNodes += 1;
+            this.stat_prunedNodes += 1;
             return;
         }
 
@@ -169,14 +182,14 @@ export class Nomad {
         this.processingInProgress += 1;
 
         try {
-            this.numRequests += 1;
+            this.stat_numRequests += 1;
 
             let startTime = Date.now();
             let resp = await this.fetcher.httpGet(node);
-            this.bytesProcessed += new TextEncoder().encode(resp.body).length;
+            this.stat_bytesProcessed += new TextEncoder().encode(resp.body).length;
             let deltaTime = Date.now() - startTime;
 
-            this.timeSpentFetching += deltaTime;
+            this.stat_timeSpentFetching += deltaTime;
 
             this.processingInProgress -= 1;
 
@@ -186,10 +199,10 @@ export class Nomad {
             }
 
             if (!resp.ok) {
-                this.numNonOkRequests += 1;
+                this.stat_numNonOkRequests += 1;
             }
         } catch (err) {
-            this.numFailedRequests += 1;
+            this.stat_numFailedRequests += 1;
             this.processingInProgress -= 1;
             console.log(err);
         }
